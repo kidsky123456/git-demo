@@ -1,0 +1,161 @@
+下面是一个详细的Jenkins Pipeline Groovy脚本示例，用于执行Java Cucumber测试并发布HTML报告，同时解决归档路径问题：
+
+```groovy
+pipeline {
+    agent any
+    stages {
+        stage('Checkout') {
+            steps {
+                git 'https://github.com/your/repo.git'  // 替换为你的仓库地址
+            }
+        }
+        
+        stage('Build and Test') {
+            steps {
+                sh 'mvn clean test'  // 使用Maven执行测试（根据实际构建工具调整）
+                // 或Gradle: sh './gradlew clean test'
+            }
+        }
+        
+        stage('Publish HTML Report') {
+            steps {
+                // 使用HTML Publisher插件发布报告
+                publishHTML([
+                    allowMissing: true,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: 'target/cucumber-reports',  // Cucumber报告生成路径
+                    reportFiles: 'cucumber-html-reports/overview-features.html',  // 入口文件
+                    reportName: 'Cucumber HTML Report',
+                    reportTitles: ''
+                ])
+            }
+        }
+        
+        stage('Archive Artifacts') {
+            steps {
+                script {
+                    // 定义报告文件模式（根据实际路径调整）
+                    def reportPath = 'target/cucumber-reports/**/*'
+                    
+                    // 打印完整归档路径（调试用）
+                    echo "归档路径: ${env.WORKSPACE}/${reportPath}"
+                    
+                    // 执行归档操作
+                    archiveArtifacts(
+                        artifacts: reportPath,
+                        allowEmptyArchive: true
+                    )
+                    
+                    // 获取并存储完整归档URL（用于后续步骤）
+                    env.ARCHIVED_REPORT_URL = "${env.BUILD_URL}artifact/${reportPath.split('/')[0]}"
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            // 在构建后显示归档路径（实际使用场景）
+            script {
+                echo "HTML报告已归档至: ${env.ARCHIVED_REPORT_URL}"
+                // 或直接使用Jenkins变量：${env.BUILD_URL}artifact/target/cucumber-reports
+            }
+        }
+    }
+}
+```
+
+### 关键点详解：
+
+1. **HTML报告发布配置** (`publishHTML` 步骤)
+   - `reportDir`: Cucumber生成的HTML报告目录（相对于工作空间）
+   - `reportFiles`: 报告入口HTML文件（通常是`overview-features.html`）
+   - 安装必备插件: [HTML Publisher Plugin](https://plugins.jenkins.io/htmlpublisher/)
+
+2. **归档路径处理**
+   - **路径组成**：`${env.WORKSPACE}/your/report/path`
+     - `env.WORKSPACE`：Jenkins提供的当前工作空间绝对路径
+   - **归档路径产生**：
+     ```plaintext
+     [工作空间]/target/cucumber-reports 
+        → 归档后变为 
+     ${JENKINS_URL}/job/[任务名]/[构建号]/artifact/target/cucumber-reports
+     ```
+
+3. **获取归档路径的方法**：
+   - **方法1**：直接拼接URL（推荐）
+     ```groovy
+     def reportUrl = "${env.BUILD_URL}artifact/target/cucumber-reports"
+     ```
+   - **方法2**：通过环境变量传递
+     ```groovy
+     env.REPORT_ARCHIVE_PATH = "target/cucumber-reports"
+     // 后续步骤使用 ${env.BUILD_URL}artifact/${env.REPORT_ARCHIVE_PATH}
+     ```
+
+4. **常见路径问题解决方案**：
+   ```groovy
+   // 场景：报告路径包含时间戳目录
+   script {
+     def timestampDir = sh(script: 'ls -td target/cucumber-reports/*/ | head -1', returnStdout: true).trim()
+     publishHTML(reportDir: timestampDir, ...)
+     archiveArtifacts(artifacts: "${timestampDir}/**/*")
+   }
+   ```
+
+### 最佳实践建议：
+1. **路径通用化**：使用环境变量代替硬编码路径
+   ```groovy
+   environment {
+     REPORT_PATH = 'target/cucumber-reports'
+   }
+   // 使用 ${env.REPORT_PATH}
+   ```
+
+2. **多报告处理**：如需归档多种格式报告
+   ```groovy
+   archiveArtifacts artifacts: '**/cucumber-reports/*.*', allowEmptyArchive: true
+   ```
+
+3. **路径验证**：添加检查步骤确保路径存在
+   ```groovy
+   stage('Verify Report Path') {
+     steps {
+       script {
+         if (!fileExists('target/cucumber-reports')) {
+           error '测试报告目录不存在!'
+         }
+       }
+     }
+   }
+   ```
+
+4. **邮件通知集成**：
+   ```groovy
+   post {
+     failure {
+       emailext body: "报告查看: ${env.BUILD_URL}artifact/${env.REPORT_PATH}",
+                subject: '测试失败通知'
+     }
+   }
+   ```
+
+### 注意事项：
+1. Cucumber配置需确保生成HTML报告（示例配置）：
+   ```java
+   // Runner类配置
+   @CucumberOptions(
+     plugin = ["html:target/cucumber-reports"],
+     ...
+   )
+   ```
+
+2. Jenkins插件依赖：
+   - HTML Publisher Plugin
+   - Cucumber Reports Plugin (可选)
+   - File Operations Plugin (复杂路径操作)
+
+3. 路径大小写敏感性：Linux环境下注意路径大小写匹配
+
+完整流程：测试执行 → 报告生成 → HTML发布 → 归档 → 通过`${BUILD_URL}artifact/...`访问归档内容
