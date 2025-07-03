@@ -1,0 +1,239 @@
+以下是一个完整的 Jenkins Pipeline 脚本，用于执行 Cucumber 测试并发布 HTML 报告，同时解决归档路径动态变化的问题：
+
+```groovy
+pipeline {
+    agent any
+    
+    tools {
+        // 根据实际工具配置（可选）
+        maven 'Maven_3.8.6'
+        jdk 'JDK_17'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install'
+                // 或使用 Maven: sh 'mvn clean install'
+            }
+        }
+        
+        stage('Run Cucumber Tests') {
+            steps {
+                // 运行测试并生成报告
+                script {
+                    // 使用时间戳创建唯一报告目录
+                    def timestamp = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
+                    env.REPORT_DIR = "cucumber-reports/${timestamp}"
+                    
+                    // 运行测试并指定报告路径
+                    sh "mkdir -p ${env.REPORT_DIR}"
+                    sh "npx cucumber-js --format json:${env.REPORT_DIR}/cucumber-report.json --format html:${env.REPORT_DIR}/index.html"
+                    
+                    // 或使用 Maven:
+                    // sh "mvn test -Dcucumber.plugin='html:${env.REPORT_DIR}/index.html'"
+                }
+            }
+        }
+        
+        stage('Publish HTML Report') {
+            steps {
+                script {
+                    // 验证报告文件是否存在
+                    def reportPath = "${env.WORKSPACE}/${env.REPORT_DIR}/index.html"
+                    if (!fileExists(reportPath)) {
+                        error "❌ 报告文件不存在: ${reportPath}"
+                    }
+                    
+                    // 发布 HTML 报告
+                    publishHTML(
+                        target: [
+                            allowMissing: false,
+                            alwaysLinkToLastBuild: true,
+                            keepAll: true,
+                            reportDir: env.REPORT_DIR,
+                            reportFiles: 'index.html',
+                            reportName: 'Cucumber Test Report'
+                        ]
+                    )
+                    
+                    // 存储报告路径供归档使用
+                    env.ARCHIVE_PATH = env.REPORT_DIR
+                }
+            }
+        }
+        
+        stage('Archive Results') {
+            steps {
+                script {
+                    // 获取动态生成的报告路径
+                    def archiveDir = env.ARCHIVE_PATH ?: 'cucumber-reports'
+                    
+                    echo "📦 归档路径: ${archiveDir}"
+                    
+                    // 归档原始报告文件
+                    archiveArtifacts artifacts: "${archiveDir}/**/*", fingerprint: true
+                    
+                    // 归档 JSON 报告（用于其他分析）
+                    archiveArtifacts artifacts: "${archiveDir}/*.json", fingerprint: true
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            // 清理工作空间（可选）
+            cleanWs()
+        }
+        success {
+            // 发送成功通知
+            slackSend color: 'good', message: "Cucumber 测试通过: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+        }
+        failure {
+            // 发送失败通知
+            slackSend color: 'danger', message: "Cucumber 测试失败: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+        }
+    }
+}
+```
+
+### 关键解决方案说明：
+
+1. **动态报告路径处理**：
+   ```groovy
+   // 创建唯一时间戳目录
+   def timestamp = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
+   env.REPORT_DIR = "cucumber-reports/${timestamp}"
+   
+   // 运行测试时指定路径
+   sh "npx cucumber-js --format html:${env.REPORT_DIR}/index.html"
+   ```
+
+2. **跨阶段共享路径**：
+   ```groovy
+   // 在测试阶段存储路径到环境变量
+   env.ARCHIVE_PATH = env.REPORT_DIR
+   
+   // 在归档阶段获取路径
+   def archiveDir = env.ARCHIVE_PATH ?: 'cucumber-reports'
+   ```
+
+3. **路径验证**：
+   ```groovy
+   // 检查报告是否存在
+   def reportPath = "${env.WORKSPACE}/${env.REPORT_DIR}/index.html"
+   if (!fileExists(reportPath)) {
+       error "❌ 报告文件不存在: ${reportPath}"
+   }
+   ```
+
+4. **Cucumber 报告配置技巧**：
+   - 确保安装了正确的报告生成器：
+     ```bash
+     npm install @cucumber/html-formatter --save-dev
+     ```
+   - 或在 Maven 中配置：
+     ```xml
+     <dependency>
+         <groupId>io.cucumber</groupId>
+         <artifactId>cucumber-java</artifactId>
+         <version>7.15.0</version>
+     </dependency>
+     <dependency>
+         <groupId>io.cucumber</groupId>
+         <artifactId>cucumber-junit-platform-engine</artifactId>
+         <version>7.15.0</version>
+     </dependency>
+     ```
+
+### 常见问题解决方案：
+
+**问题1：报告链接显示但内容空白**
+```groovy
+// 在 pipeline 开头添加 CSP 禁用
+properties([
+    systemProperties([
+        'hudson.model.DirectoryBrowserSupport.CSP': 'sandbox allow-scripts; default-src \'none\'; img-src \'self\'; style-src \'self\' \'unsafe-inline\'; script-src \'self\' \'unsafe-inline\';'
+    ])
+])
+```
+
+**问题2：路径包含空格或特殊字符**
+```groovy
+// 使用单引号包裹路径
+sh "mkdir -p '${env.REPORT_DIR}'"
+publishHTML(reportDir: "'${env.REPORT_DIR}'")
+```
+
+**问题3：归档时找不到文件**
+```groovy
+stage('Verify Path') {
+    steps {
+        script {
+            sh """
+                echo "当前工作目录: \$(pwd)"
+                echo "报告路径: ${env.ARCHIVE_PATH}"
+                ls -laR '${env.ARCHIVE_PATH}'
+            """
+        }
+    }
+}
+```
+
+### 优化建议：
+
+1. **使用 Cucumber Jenkins 插件**：
+   ```groovy
+   stage('Publish Cucumber Report') {
+       steps {
+           cucumber buildStatus: "UNSTABLE",
+                   fileIncludePattern: "**/*.json",
+                   jsonReportDirectory: env.REPORT_DIR
+       }
+   }
+   ```
+   需要安装 [Cucumber Reports](https://plugins.jenkins.io/cucumber-reports/) 插件
+
+2. **并行测试执行**：
+   ```groovy
+   stage('Parallel Tests') {
+       parallel {
+           stage('Chrome') {
+               steps {
+                   sh "TARGET_BROWSER=chrome npx cucumber-js"
+               }
+           }
+           stage('Firefox') {
+               steps {
+                   sh "TARGET_BROWSER=firefox npx cucumber-js"
+               }
+           }
+       }
+   }
+   ```
+
+3. **历史趋势图**：
+   ```groovy
+   stage('Record Trends') {
+       steps {
+           cucumber buildStatus: "UNSTABLE",
+                   fileIncludePattern: "**/*.json",
+                   jsonReportDirectory: env.REPORT_DIR,
+                   trendsLimit: 10 // 显示最近10次构建的趋势
+       }
+   }
+   ```
+
+完成配置后，测试报告会出现在：
+1. Jenkins 构建页面左侧的 **Cucumber Test Report** 链接
+2. 构建摘要中的 **Cucumber Reports** 部分
+3. 归档文件可在构建页面的 **Artifacts** 区域下载
+
+![Cucumber Report in Jenkins](https://www.jenkins.io/doc/book/resources/pipeline/cucumber-report.png)
