@@ -1,0 +1,269 @@
+在 Jenkins 中处理 `publishHTML` 插件生成的报告路径时，确实会遇到路径中包含 `/jobs/` 而不是 `/job/` 的情况。这是因为 Jenkins 的多分支项目（Pipeline）使用了不同的 URL 结构。下面是完整的解决方案：
+
+### 获取 publishHTML 自动生成的报告路径
+
+```groovy
+pipeline {
+    agent any
+    stages {
+        stage('Run Tests') {
+            steps {
+                sh 'mvn test' // 执行测试生成报告
+            }
+        }
+        
+        stage('Publish HTML Report') {
+            steps {
+                script {
+                    // 发布 HTML 报告
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'target/cucumber-reports',
+                        reportFiles: 'index.html',
+                        reportName: 'Cucumber Report',
+                        reportTitles: 'Cucumber Test Results'
+                    ])
+                    
+                    // 获取 publishHTML 自动生成的路径
+                    def htmlReportAction = currentBuild.rawBuild.getAction(hudson.plugins.htmlpublisher.HtmlPublisherTarget.HTMLBuildAction.class)
+                    if (htmlReportAction) {
+                        // 获取所有 HTML 报告路径
+                        def htmlReports = htmlReportAction.htmlReports
+                        if (!htmlReports.isEmpty()) {
+                            def report = htmlReports[0]
+                            
+                            // 获取完整的 HTML 报告 URL
+                            env.HTML_REPORT_URL = "${env.JENKINS_URL}${report.reportURL}"
+                            
+                            // 获取 Jenkins 内部存储路径
+                            env.HTML_REPORT_INTERNAL_PATH = report.reportDir.remote
+                            
+                            echo "HTML Report URL: ${env.HTML_REPORT_URL}"
+                            echo "Internal Path: ${env.HTML_REPORT_INTERNAL_PATH}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Archive Artifacts') {
+            steps {
+                script {
+                    // 归档测试报告
+                    archiveArtifacts artifacts: 'target/cucumber-reports/**/*', allowEmptyArchive: true
+                    
+                    // 获取归档路径
+                    def archiveActions = currentBuild.rawBuild.getActions(hudson.tasks.ArtifactArchiver.ArchiveTargetAction.class)
+                    if (!archiveActions.isEmpty()) {
+                        def artifactUrls = []
+                        for (action in archiveActions) {
+                            for (artifact in action.artifacts) {
+                                // 获取单个归档文件的 URL
+                                def artifactUrl = "${env.JENKINS_URL}${env.BUILD_URL}artifact/${artifact.href}"
+                                artifactUrls.add(artifactUrl)
+                            }
+                        }
+                        env.ARCHIVE_URLS = artifactUrls.join(',')
+                        echo "Archive URLs: ${env.ARCHIVE_URLS}"
+                    }
+                    
+                    // 获取完整的归档目录 URL
+                    env.FULL_ARCHIVE_URL = "${env.JENKINS_URL}${env.BUILD_URL}artifact/target/cucumber-reports/"
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // 在构建后显示所有路径信息
+                echo """
+                ====== 路径信息 ======
+                HTML 报告 URL: ${env.HTML_REPORT_URL ?: 'N/A'}
+                归档目录 URL: ${env.FULL_ARCHIVE_URL ?: 'N/A'}
+                所有归档文件: ${env.ARCHIVE_URLS ?: 'N/A'}
+                """
+            }
+        }
+    }
+}
+```
+
+### 关键问题解决方案
+
+#### 1. 路径中包含 `/jobs/` 而不是 `/job/`
+
+这是因为 Jenkins 的多分支项目结构不同：
+- **传统项目**：`/job/PROJECT_NAME/`
+- **多分支/Pipeline项目**：`/job/PROJECT_NAME/job/BRANCH_NAME/`
+
+解决方案：
+```groovy
+// 使用 BUILD_URL 环境变量自动处理
+env.FULL_ARCHIVE_URL = "${env.JENKINS_URL}${env.BUILD_URL}artifact/path/to/reports/"
+```
+
+#### 2. 获取 publishHTML 自动生成的路径
+
+```groovy
+// 获取 HTML 发布插件的动作
+def htmlReportAction = currentBuild.rawBuild.getAction(hudson.plugins.htmlpublisher.HtmlPublisherTarget.HTMLBuildAction.class)
+
+if (htmlReportAction) {
+    // 获取报告列表
+    def htmlReports = htmlReportAction.htmlReports
+    
+    if (!htmlReports.isEmpty()) {
+        // 获取第一个报告
+        def report = htmlReports[0]
+        
+        // 获取完整报告 URL
+        env.HTML_REPORT_URL = "${env.JENKINS_URL}${report.reportURL}"
+        
+        // 获取 Jenkins 内部存储路径
+        env.HTML_REPORT_INTERNAL_PATH = report.reportDir.remote
+    }
+}
+```
+
+#### 3. 获取归档路径
+
+```groovy
+// 获取归档动作
+def archiveActions = currentBuild.rawBuild.getActions(hudson.tasks.ArtifactArchiver.ArchiveTargetAction.class)
+
+if (!archiveActions.isEmpty()) {
+    def artifactUrls = []
+    
+    for (action in archiveActions) {
+        for (artifact in action.artifacts) {
+            // 构建单个文件的归档 URL
+            def artifactUrl = "${env.JENKINS_URL}${env.BUILD_URL}artifact/${artifact.href}"
+            artifactUrls.add(artifactUrl)
+        }
+    }
+    
+    env.ARCHIVE_URLS = artifactUrls.join(',')
+}
+```
+
+### 处理多分支项目的路径问题
+
+对于多分支项目，使用以下方法构建正确的 URL：
+
+```groovy
+// 获取基础 URL 的通用方法
+def getBaseUrl() {
+    def url = env.JENKINS_URL
+    if (!url.endsWith('/')) url += '/'
+    
+    // 处理多分支项目路径
+    if (env.JOB_NAME.contains('/')) {
+        def parts = env.JOB_NAME.split('/')
+        return url + "job/${parts[0]}/job/${parts[1]}/${env.BUILD_NUMBER}/"
+    } else {
+        return url + "job/${env.JOB_NAME}/${env.BUILD_NUMBER}/"
+    }
+}
+
+// 在 stage 中使用
+stage('Get Paths') {
+    steps {
+        script {
+            def baseUrl = getBaseUrl()
+            env.CUSTOM_ARCHIVE_URL = "${baseUrl}artifact/target/reports/"
+            echo "Custom Archive URL: ${env.CUSTOM_ARCHIVE_URL}"
+        }
+    }
+}
+```
+
+### 获取归档路径的最佳实践
+
+1. **使用环境变量组合**：
+   ```groovy
+   env.FULL_ARCHIVE_PATH = "${env.WORKSPACE}/target/cucumber-reports"
+   env.ARCHIVE_URL = "${env.JENKINS_URL}${env.BUILD_URL}artifact/target/cucumber-reports/"
+   ```
+
+2. **在邮件通知中使用路径**：
+   ```groovy
+   emailext body: """
+   Cucumber 测试报告：
+   - HTML 报告: ${env.HTML_REPORT_URL}
+   - 归档文件: ${env.ARCHIVE_URL}
+   """, subject: "测试报告 - ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+   ```
+
+3. **处理路径中的空格和特殊字符**：
+   ```groovy
+   import java.net.URLEncoder
+   
+   def encodePath(path) {
+       return URLEncoder.encode(path, "UTF-8").replace("+", "%20")
+   }
+   
+   env.SAFE_ARCHIVE_URL = "${env.BUILD_URL}artifact/${encodePath('path with spaces/report.html')}"
+   ```
+
+4. **在 Blue Ocean 中显示链接**：
+   ```groovy
+   stage('Show Links') {
+       steps {
+           script {
+               // 在 Blue Ocean 中创建可点击的链接
+               echo "HTML Report: ${env.HTML_REPORT_URL}"
+               echo "Archive: ${env.ARCHIVE_URL}"
+               
+               // 添加到构建描述
+               currentBuild.description = """
+               <a href="${env.HTML_REPORT_URL}">HTML Report</a> | 
+               <a href="${env.ARCHIVE_URL}">Download Archive</a>
+               """
+           }
+       }
+   }
+   ```
+
+### 常见问题解决
+
+**Q: 为什么获取不到 HTML 报告路径？**
+A: 确保：
+1. `publishHTML` 步骤已成功执行
+2. 使用 `currentBuild.rawBuild` 需要批准脚本权限（在 Jenkins 脚本批准页面批准）
+
+**Q: 多分支项目路径不正确？**
+A: 使用此方法处理：
+```groovy
+def getCorrectArtifactPath(String relativePath) {
+    def base = env.RUN_DISPLAY_URL.replaceAll('/display/redirect$', '')
+    if (!base.endsWith('/')) base += '/'
+    return base + "artifact/${relativePath}"
+}
+
+env.CORRECT_ARCHIVE_URL = getCorrectArtifactPath('target/reports/')
+```
+
+**Q: 如何获取归档文件列表？**
+```groovy
+def getArchivedFiles() {
+    def files = []
+    def build = currentBuild.rawBuild
+    def artifacts = build.getArtifacts()
+    
+    if (artifacts) {
+        for (artifact in artifacts) {
+            files.add("${env.BUILD_URL}artifact/${artifact.href}")
+        }
+    }
+    return files
+}
+
+// 使用
+env.ARCHIVED_FILES = getArchivedFiles().join('\n')
+```
+
+这些解决方案考虑了 Jenkins 的不同项目结构（包括包含 `/jobs/` 的多分支项目），并提供多种获取和使用路径的方法。根据你的具体需求选择适合的方案。
