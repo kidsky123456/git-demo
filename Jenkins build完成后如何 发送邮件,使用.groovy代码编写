@@ -1,0 +1,51 @@
+pipeline {
+    agent any
+ 
+    environment {
+        EMAIL_RECIPIENTS = "recipient1@example.com, recipient2@example.com"
+    }
+ 
+    stages {
+        stage('Build') {
+            steps {
+                echo 'Building...'
+                // 这里添加你的构建步骤
+                sh 'make' // 示例：使用 make 命令进行构建
+            }
+        }
+        stage('Test') {
+            steps {
+                echo 'Testing...'
+                // 这里添加你的测试步骤
+                sh 'make test' // 示例：使用 make test 进行测试
+            }
+        }
+        stage('Deploy') {
+            steps {
+                echo 'Deploying...'
+                // 这里添加你的部署步骤
+                sh 'make deploy' // 示例：使用 make deploy 进行部署
+            }
+        }
+    }
+    post {
+        success {
+            // 构建成功时发送邮件
+            emailext (
+                subject: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: """<p>SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]':</p>
+                    <p>Check console output at &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} [${env.BUILD_NUMBER}]</a>&QUOT;</p>""",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider']]
+            )
+        }
+        failure {
+            // 构建失败时发送邮件
+            emailext (
+                subject: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: """<p>FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]':</p>
+                    <p>Check console output at &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} [${env.BUILD_NUMBER}]</a>&QUOT;</p>""",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider']]
+            )
+        }
+    }
+}
