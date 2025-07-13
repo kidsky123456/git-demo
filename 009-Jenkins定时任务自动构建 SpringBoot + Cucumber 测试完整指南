@@ -403,3 +403,78 @@ post {
 3. 查看邮件日志：`${JENKINS_HOME}/logs/mailer.log`
 
 此解决方案为 SpringBoot + Cucumber 项目提供了完整的自动化测试流水线，每天早晨自动执行测试并及时通知团队结果，确保产品质量持续可控。
+
+===================================================================================================================================================
+下面为你提供一个基于Jenkins Pipeline的 Groovy 脚本，它能实现与上述步骤相同的功能，涵盖定时构建、拉取代码、Maven 测试、生成测试报告、归档报告以及邮件通知等。
+
+```groovy
+pipeline {
+    agent any
+    triggers {
+        // 每天凌晨2点执行构建
+        cron('0 2 * * *')
+    }
+    stages {
+        stage('拉取代码') {
+            steps {
+                // 从Git仓库拉取代码
+                git url: 'https://github.com/yourusername/your-repo.git', credentialsId: 'your-credentials-id'
+            }
+        }
+        stage('Maven测试') {
+            steps {
+                // 使用Maven进行清理和测试
+                sh 'mvn clean test'
+            }
+        }
+    }
+    post {
+        success {
+            // 构建成功后执行的操作
+            steps {
+                junit 'target/surefire-reports/*.xml'
+                archiveArtifacts artifacts: 'target/surefire-reports/*'
+                emailext (
+                    subject: '[Jenkins] ${PROJECT_NAME} - Build #${BUILD_NUMBER} - SUCCESS!',
+                    body: '<p>项目 ${PROJECT_NAME} 的构建 #${BUILD_NUMBER} 已成功完成。</p><p>详细信息请查看：<a href="${BUILD_URL}">${BUILD_URL}</a></p>',
+                    to: 'recipient@example.com'
+                )
+            }
+        }
+        failure {
+            // 构建失败后执行的操作
+            steps {
+                junit 'target/surefire-reports/*.xml'
+                archiveArtifacts artifacts: 'target/surefire-reports/*'
+                emailext (
+                    subject: '[Jenkins] ${PROJECT_NAME} - Build #${BUILD_NUMBER} - FAILURE!',
+                    body: '<p>项目 ${PROJECT_NAME} 的构建 #${BUILD_NUMBER} 失败了。</p><p>详细信息请查看：<a href="${BUILD_URL}">${BUILD_URL}</a></p>',
+                    to: 'recipient@example.com'
+                )
+            }
+        }
+    }
+}
+```
+
+### 代码说明：
+1. **pipeline 部分**：定义了整个 Jenkins Pipeline 的结构。
+    - `agent any`：表示该 Pipeline 可以在任意可用的代理节点上执行。
+    - `triggers`：使用 `cron` 表达式设定定时构建，这里设置为每天凌晨 2 点执行。
+2. **stages 部分**：
+    - `拉取代码`：使用 `git` 步骤从指定的 Git 仓库拉取代码，`credentialsId` 需要替换为你在 Jenkins 中配置的凭证 ID。
+    - `Maven测试`：使用 `sh` 步骤执行 `mvn clean test` 命令进行项目的清理和测试。
+3. **post 部分**：
+    - `success`：当构建成功时，执行以下操作：
+        - `junit`：发布 JUnit 测试报告，路径为 `target/surefire-reports/*.xml`。
+        - `archiveArtifacts`：归档测试报告文件。
+        - `emailext`：发送成功通知邮件，包含项目名称、构建编号和构建状态，并提供构建详情的链接。
+    - `failure`：当构建失败时，执行与成功时类似的操作，但邮件主题和内容会表明构建失败。
+
+### 使用方法：
+1. 在 Jenkins 中创建一个新的 Pipeline 项目。
+2. 在 Pipeline 配置中，选择“Pipeline script”，并将上述 Groovy 代码复制粘贴到文本框中。
+3. 根据实际情况修改 Git 仓库 URL、凭证 ID 和收件人邮箱地址。
+4. 保存配置并手动触发一次构建，验证脚本是否正常工作。
+
+通过上述 Groovy 脚本，你可以利用 Jenkins Pipeline 实现 Spring Boot + Cucumber 自动化测试项目的定时自动构建和相关操作。 
