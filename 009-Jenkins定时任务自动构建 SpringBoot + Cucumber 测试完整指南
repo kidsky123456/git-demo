@@ -1,0 +1,405 @@
+# Jenkins定时任务自动构建 SpringBoot + Cucumber 测试完整指南
+
+下面是为 SpringBoot + Cucumber 自动化测试项目设计的完整 Jenkins 定时构建解决方案，包含每日7-8点自动构建、代码拉取、测试执行、报告生成、归档和邮件通知等功能。
+
+## 完整 Jenkinsfile 配置
+
+```groovy
+pipeline {
+    agent any
+    
+    // 1. 定时任务配置 (每天早上7:00-8:00随机时间执行)
+    triggers {
+        cron(timezone: 'Asia/Shanghai', spec: 'H 7-8 * * *')
+    }
+    
+    // 环境变量配置
+    environment {
+        // 邮件接收人 (多人用逗号分隔)
+        EMAIL_RECIPIENTS = 'qa-team@company.com,dev-team@company.com,manager@company.com'
+        
+        // 报告目录路径
+        REPORT_DIR = 'target/cucumber-reports'
+        
+        // Maven 配置
+        MAVEN_OPTS = '-Xmx2048m -XX:MaxPermSize=512m'
+    }
+    
+    // 2. 构建选项
+    options {
+        // 保留最近10次构建记录
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        
+        // 设置2小时超时 (防止测试卡死)
+        timeout(time: 2, unit: 'HOURS')
+        
+        // 添加时间戳到控制台输出
+        timestamps()
+    }
+    
+    stages {
+        // 3. 拉取代码
+        stage('Checkout Source Code') {
+            steps {
+                script {
+                    echo "📥 开始拉取代码 (分支: ${env.GIT_BRANCH})"
+                    git branch: 'main', 
+                         url: 'https://github.com/your-org/springboot-cucumber-project.git',
+                         credentialsId: 'github-credentials'
+                }
+            }
+        }
+        
+        // 4. 构建项目
+        stage('Build Project') {
+            steps {
+                script {
+                    echo "🔨 构建SpringBoot项目..."
+                    sh 'mvn clean package -DskipTests'
+                }
+            }
+        }
+        
+        // 5. 执行Cucumber测试
+        stage('Run Cucumber Tests') {
+            steps {
+                script {
+                    echo "🚀 执行Cucumber自动化测试..."
+                    // 执行测试并生成报告
+                    sh 'mvn test -Dcucumber.plugin="html:${REPORT_DIR}/cucumber.html, json:${REPORT_DIR}/cucumber.json"'
+                }
+            }
+            
+            post {
+                // 测试失败时保存日志
+                failure {
+                    archiveArtifacts artifacts: '**/surefire-reports/*.txt, **/logs/*.log', allowEmptyArchive: true
+                }
+            }
+        }
+        
+        // 6. 生成测试报告
+        stage('Generate Test Reports') {
+            steps {
+                script {
+                    echo "📊 生成测试报告..."
+                    // 使用cucumber-reporting插件生成丰富报告
+                    sh 'mvn cucumber:report -Dcucumber.reports.dir=${REPORT_DIR}/generated'
+                    
+                    // 复制报告到Jenkins工作目录
+                    sh 'mkdir -p reports && cp -R ${REPORT_DIR}/* reports/'
+                }
+            }
+            
+            post {
+                always {
+                    // 归档测试报告
+                    archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+                }
+            }
+        }
+    }
+    
+    // 7. 后处理与通知
+    post {
+        always {
+            script {
+                // 计算测试通过率
+                def testResult = cucumber jsonReportDirectory: 'reports'
+                def passed = testResult.passed.size()
+                def failed = testResult.failed.size()
+                def skipped = testResult.skipped.size()
+                def total = passed + failed + skipped
+                def passRate = total > 0 ? Math.round((passed / total) * 100) : 0
+                
+                // 构建时间信息
+                def buildTime = new Date(currentBuild.startTimeInMillis)
+                def timeRange = buildTime.format("yyyy-MM-dd HH:mm", TimeZone.getTimeZone('Asia/Shanghai'))
+                
+                // 邮件内容模板
+                def emailBody = """
+                | ===================== 自动化测试报告 =====================
+                | 
+                | **项目名称**: ${env.JOB_NAME}
+                | **构建编号**: #${env.BUILD_NUMBER}
+                | **执行时间**: ${timeRange}
+                | **持续时间**: ${currentBuild.durationString.replace(' and counting', '')}
+                | **测试结果**: ${currentBuild.currentResult}
+                | 
+                | 📊 测试统计:
+                |    ✅ 通过: ${passed} 
+                |    ❌ 失败: ${failed}
+                |    ⏭️ 跳过: ${skipped}
+                |    🎯 总计: ${total}
+                |    📈 通过率: ${passRate}%
+                | 
+                | 🔗 访问链接:
+                |    - 控制台日志: ${env.BUILD_URL}console
+                |    - HTML报告: ${env.BUILD_URL}artifact/reports/cucumber.html
+                |    - 详细报告: ${env.BUILD_URL}artifact/reports/generated/cucumber-html-reports/overview-features.html
+                | 
+                | ========================================================
+                """.stripMargin()
+                
+                // 保存邮件内容供后续使用
+                env.EMAIL_CONTENT = emailBody
+            }
+            
+            // 发布Cucumber报告
+            cucumber reportTitle: 'Cucumber Test Report',
+                     jsonReportDirectory: 'reports',
+                     fileIncludePattern: '**/*.json',
+                     trendsLimit: 10
+        }
+        
+        // 构建成功时发送通知
+        success {
+            script {
+                echo "✅ 测试通过，发送通知邮件..."
+                emailext to: env.EMAIL_RECIPIENTS,
+                         subject: "✅ SUCCESS: SpringBoot测试通过 - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                         body: env.EMAIL_CONTENT
+            }
+        }
+        
+        // 构建失败时发送通知
+        failure {
+            script {
+                echo "❌ 测试失败，发送告警邮件..."
+                emailext to: env.EMAIL_RECIPIENTS,
+                         subject: "❌ FAILED: SpringBoot测试失败 - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                         body: env.EMAIL_CONTENT,
+                         attachLog: true,
+                         attachmentsPattern: 'reports/**/*.html'
+            }
+        }
+        
+        // 测试不稳定时发送通知
+        unstable {
+            script {
+                echo "⚠️ 测试不稳定，发送通知..."
+                emailext to: env.EMAIL_RECIPIENTS,
+                         subject: "⚠️ UNSTABLE: SpringBoot测试不稳定 - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                         body: env.EMAIL_CONTENT,
+                         attachmentsPattern: 'reports/**/*.html'
+            }
+        }
+    }
+}
+```
+
+## 核心功能说明
+
+### 1. 定时构建配置
+```groovy
+triggers {
+    cron(timezone: 'Asia/Shanghai', spec: 'H 7-8 * * *')
+}
+```
+- **H 7-8**：在7:00-8:59之间随机时间执行（Jenkins自动分配）
+- **timezone**：指定时区为亚洲/上海（按需修改）
+- **执行频率**：每天执行（无日期限制）
+
+### 2. Cucumber 测试执行
+```groovy
+sh 'mvn test -Dcucumber.plugin="html:${REPORT_DIR}/cucumber.html, json:${REPORT_DIR}/cucumber.json"'
+```
+- 使用 Maven 执行测试
+- 生成 HTML 和 JSON 格式报告
+- 通过 `cucumber.filter.tags` 参数可指定测试标签（如 `@smoke`）
+
+### 3. 测试报告处理
+```groovy
+// 生成增强报告
+sh 'mvn cucumber:report -Dcucumber.reports.dir=${REPORT_DIR}/generated'
+
+// 归档报告
+archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+
+// 发布报告
+cucumber reportTitle: 'Cucumber Test Report',
+         jsonReportDirectory: 'reports',
+         fileIncludePattern: '**/*.json'
+```
+
+### 4. 邮件通知系统
+```groovy
+emailext to: env.EMAIL_RECIPIENTS,
+         subject: "✅ SUCCESS: ...",
+         body: env.EMAIL_CONTENT,
+         attachLog: true,
+         attachmentsPattern: 'reports/**/*.html'
+```
+- 多人接收（逗号分隔）
+- 包含测试统计（通过率、失败数等）
+- 失败时附加日志和报告
+- 提供直接访问链接
+
+## 必要 Jenkins 插件
+
+1. **Pipeline 相关**:
+   - Pipeline
+   - Pipeline: Maven Integration
+   - Pipeline: GitHub Plugin
+
+2. **测试报告**:
+   - Cucumber Reports Plugin
+   - JUnit Plugin
+
+3. **通知系统**:
+   - Email Extension Plugin
+   - Mailer Plugin
+
+4. **其他工具**:
+   - Timestamper
+   - Build Timeout
+   - Workspace Cleanup
+
+## 安装与配置步骤
+
+### 1. 安装所需插件
+1. 进入 **Jenkins > 系统管理 > 插件管理**
+2. 在 **可选插件** 标签页搜索并安装上述插件
+3. 重启 Jenkins 生效
+
+### 2. 配置邮件服务器
+1. 进入 **系统管理 > 系统配置**
+2. 找到 **邮件通知** 部分：
+   - SMTP 服务器：smtp.your-company.com
+   - 默认用户邮箱后缀：@your-company.com
+   - 勾选 **使用SMTP认证**
+   - 填写用户名/密码
+3. 测试邮件配置
+
+### 3. 配置全局工具
+1. 进入 **系统管理 > 全局工具配置**
+2. 配置 JDK：
+   - 别名：JDK11
+   - JAVA_HOME：/usr/lib/jvm/java-11-openjdk
+3. 配置 Maven：
+   - 别名：Maven 3.8.6
+   - MAVEN_HOME：/opt/maven
+
+### 4. 创建 Pipeline 任务
+1. 新建任务 > 选择 **流水线**
+2. 在 **Pipeline** 部分：
+   - 定义：Pipeline script from SCM
+   - SCM：Git
+   - 仓库 URL：https://github.com/your-org/springboot-cucumber-project.git
+   - 凭据：添加 GitHub 访问凭证
+   - 脚本路径：Jenkinsfile (保持默认)
+
+## 高级配置技巧
+
+### 1. 多分支支持
+```groovy
+triggers {
+    // 仅main分支启用定时构建
+    cron(env.BRANCH_NAME == 'main' ? 'H 7-8 * * *' : '')
+}
+```
+
+### 2. 参数化构建
+```groovy
+parameters {
+    choice(name: 'TEST_TAGS', choices: '@smoke\n@regression\n@all', description: '测试范围')
+    string(name: 'MAVEN_GOALS', defaultValue: 'test', description: 'Maven执行目标')
+}
+
+stages {
+    stage('Run Tests') {
+        steps {
+            sh "mvn ${params.MAVEN_GOALS} -Dcucumber.filter.tags=\"${params.TEST_TAGS}\""
+        }
+    }
+}
+```
+
+### 3. 测试失败重试
+```groovy
+stage('Run Flaky Tests') {
+    steps {
+        retry(3) {
+            sh 'mvn test -Dcucumber.filter.tags="@flaky"'
+        }
+    }
+}
+```
+
+### 4. 资源清理
+```groovy
+post {
+    always {
+        // 清理工作空间
+        cleanWs()
+        
+        // 清理Maven本地仓库缓存
+        sh 'mvn dependency:purge-local-repository -DactTransitively=false'
+    }
+}
+```
+
+## 报告效果预览
+
+### 邮件内容示例
+```
+===================== 自动化测试报告 =====================
+
+**项目名称**: SpringBoot-Daily-Test
+**构建编号**: #42
+**执行时间**: 2025-07-15 07:38
+**持续时间**: 15 min 23 sec
+**测试结果**: SUCCESS
+
+📊 测试统计:
+   ✅ 通过: 158 
+   ❌ 失败: 0
+   ⏭️ 跳过: 2
+   🎯 总计: 160
+   📈 通过率: 99%
+
+🔗 访问链接:
+   - 控制台日志: https://jenkins.example.com/job/SpringBoot-Daily-Test/42/console
+   - HTML报告: https://jenkins.example.com/job/SpringBoot-Daily-Test/42/artifact/reports/cucumber.html
+   - 详细报告: https://jenkins.example.com/job/SpringBoot-Daily-Test/42/artifact/reports/generated/cucumber-html-reports/overview-features.html
+```
+
+### Jenkins 报告面板
+1. **Cucumber 报告**：
+   - 功能概览
+   - 场景通过率
+   - 步骤执行时间
+   - 失败测试堆栈跟踪
+
+2. **趋势分析**：
+   - 历史通过率变化
+   - 失败测试趋势
+   - 执行时间变化
+
+## 故障排查指南
+
+### 定时任务未执行
+1. 检查 Jenkins 系统时间：`系统管理 > 系统信息`
+2. 查看计划任务日志：`系统管理 > 系统日志 > 日志级别`
+   - 添加 Logger：`hudson.triggers.Timer` (级别设为 ALL)
+3. 确认任务配置：`任务 > 配置 > 触发器`
+
+### 测试报告未生成
+1. 检查 Cucumber 插件配置：
+   ```java
+   // pom.xml 确保包含报告插件
+   <dependency>
+       <groupId>io.cucumber</groupId>
+       <artifactId>cucumber-reporting</artifactId>
+       <version>5.7.6</version>
+   </dependency>
+   ```
+2. 验证报告路径：`target/cucumber-reports`
+3. 检查文件权限：`sh 'ls -la target/cucumber-reports'`
+
+### 邮件发送失败
+1. 测试邮件配置：`系统管理 > 系统配置 > Extended E-mail Notification`
+2. 检查 SMTP 端口（通常 587 或 465）
+3. 查看邮件日志：`${JENKINS_HOME}/logs/mailer.log`
+
+此解决方案为 SpringBoot + Cucumber 项目提供了完整的自动化测试流水线，每天早晨自动执行测试并及时通知团队结果，确保产品质量持续可控。
