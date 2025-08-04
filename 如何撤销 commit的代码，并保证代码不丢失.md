@@ -169,4 +169,82 @@ git reset --soft <commit-id>
 | `--force push`   | 个人分支覆盖提交             | ✅ 修改      | ⭐⭐⭐ 高 |
 
 > 操作完成后，可在 IDEA 右下角查看当前分支状态，确保代码修改完整保留：  
-> ![IDEA 分支状态](https://resources.jetbrains.com/help/img/idea/2023.3/branch_status.png)
+
+
+
+
+
+在 IntelliJ IDEA 中撤销最近一次的 Git commit 但保留代码更改（即撤销 commit 但不丢失代码），然后修改代码并重新提交，可以按照以下步骤操作：
+
+# ✅ 目标：
+- 撤销最近一次的 `commit`（即把 commit 撤销，回到“已修改但未提交”状态）
+- 保留所有代码修改（不丢失）
+- 修改代码后重新提交
+
+---
+
+# ✅ 方法一：使用 IDEA 的图形化界面（推荐）
+
+## 步骤 1：打开 Git 工具窗口
+1. 在 IDEA 右下角点击 **Git** 工具窗口（或通过菜单 `View → Tool Windows → Git`）。
+2. 切换到 **Log** 标签页，查看提交历史。
+
+## 步骤 2：找到你刚提交的 commit
+- 在提交历史中，找到你刚刚提交的那条 commit。
+
+## 步骤 3：执行 `Reset Current Branch to Here`
+1. 右键点击该 commit。
+2. 选择 **Reset Current Branch to Here...**
+3. 弹出对话框后，选择：
+   - **Soft**：保留工作区和暂存区的更改（推荐！）
+     - 代码不会丢失，所有修改保留在“Changes”中，可以继续编辑并重新提交。
+   - Mixed（默认）：保留工作区修改，但取消暂存（也可以）
+   - Hard：**危险！会删除所有更改，不要选！**
+
+✅ 推荐选择：**Soft**
+
+## 步骤 4：修改代码
+- 此时你会看到之前提交的文件重新出现在 **Local Changes** 中（未提交的更改）。
+- 你可以继续修改代码，修复问题。
+
+## 步骤 5：重新提交
+1. 修改完成后，回到 **Commit** 窗口。
+2. 选择要提交的文件，写好 commit 信息。
+3. 点击 **Commit and Push** 或 **Commit**。
+
+---
+
+# ✅ 方法二：使用命令行（等效操作）
+
+在 IDEA 的 Terminal 中执行：
+
+```bash
+git reset --soft HEAD~1
+```
+
+- `HEAD~1` 表示撤销最近一次 commit。
+- `--soft` 表示保留代码修改在工作区中。
+- 执行后，之前的更改会回到“未提交更改”状态。
+
+然后：
+1. 修改代码。
+2. 重新 `git add .` 和 `git commit -m "new message"`。
+
+---
+
+# ⚠️ 注意事项
+- 如果你已经 `git push` 到远程仓库，撤销 commit 后再次提交，需要使用 `git push --force`（强制推送），但要小心，避免影响他人。
+- 如果团队协作，建议使用 `git revert`（生成一个反向提交）而不是 `reset`，避免历史混乱。
+
+---
+
+# ✅ 总结
+
+| 操作 | 效果 |
+|------|------|
+| `git reset --soft HEAD~1` | 撤销最后一次 commit，保留代码修改 |
+| 在 IDEA 中选择 **Reset → Soft** | 同上，图形化操作更安全 |
+| 修改代码后重新提交 | 正常提交即可 |
+
+这样你就可以安全地撤销 commit，修改代码，再重新提交，且不会丢失任何内容。
+
